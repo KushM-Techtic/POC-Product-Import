@@ -1,0 +1,22 @@
+# Optional fallback when no website_url and AI cannot find brand site. Tuffy Security Products = tuffyproducts.com
+brand:
+  name: "Tuffy Security"
+  base_url: "https://tuffyproducts.com"
+  product_listing_url: "https://tuffyproducts.com/products/"
+
+# BigCommerce image spec
+images:
+  max_width: 1000
+  max_height: 1000
+  format: "JPEG"
+  quality: 90
+  subdir: "images"
+
+# Scraper: pagination = visit all listing pages; max_products = cap per run
+scraper:
+  request_timeout: 15
+  max_retries: 2
+  delay_between_requests_sec: 1
+  max_pages: 25
+  max_products: 500
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"
