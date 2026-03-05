@@ -7,11 +7,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Frontend can call /api/upload and Vite will proxy to FastAPI on :8000
-      '/upload': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
+      '/upload': { target: 'http://localhost:8000', changeOrigin: true },
+      '/export': { target: 'http://localhost:8000', changeOrigin: true },
+      '/import-to-bigcommerce': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

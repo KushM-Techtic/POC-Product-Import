@@ -358,7 +358,14 @@ def _extract_full_description_and_image(
     Only uses content from this single source page; image must be from the provided list (same source website).
     """
     api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    if not api_key or (not page_content and not image_urls):
+    if not page_content and not image_urls:
+        return "", ""
+    # When no API key or LLM fails, still return first valid image so images appear
+    if not api_key:
+        if image_urls:
+            first = next((u for u in image_urls if not _is_bad_image_url(u)), "")
+            if first:
+                return "", first.strip()
         return "", ""
     try:
         import openai
@@ -537,6 +544,18 @@ def find_product_with_ai(product: dict[str, Any], search_method: str = SEARCH_ME
     search_results = _search_web(query)
     log.info("Web search returned %s results", len(search_results))
     result = _call_llm_for_product(product, search_results)
+    # When OpenAI fails (e.g. 429 quota), use first search result URL so we still get images via extract/crawl
+    if not result and search_results:
+        first_url = (search_results[0].get("url") or "").strip()
+        if first_url and first_url.startswith("http"):
+            log.info("Tavily: LLM failed; using first search result URL as source for extract/crawl | url=%s", first_url[:60])
+            result = {
+                "name": (product.get("name") or product.get("sku") or "").strip(),
+                "description": "",
+                "price": "",
+                "image_url": "",
+                "source_website": first_url,
+            }
     if not result:
         return {k: "" for k in RESULT_KEYS}
     source_url = (result.get("source_website") or "").strip()
