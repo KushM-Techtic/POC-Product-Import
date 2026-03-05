@@ -209,16 +209,37 @@ def import_products_to_bigcommerce(products: List[Dict[str, Any]]) -> Dict[str, 
             continue
         created_or_updated += 1
 
-        # Use the same canonical image URL as in Excel (from chosen source website only)
+        # Upload all images (up to 5); first one is the thumbnail
+        all_image_urls = p.get("_image_urls") or []
         canonical_url = (p.get("image_url") or "").strip()
-        if canonical_url and _is_valid_image_url(canonical_url):
-            img_err = _set_main_image_from_url(cfg, product_id, canonical_url)
-            if not img_err:
-                image_set += 1
-            else:
-                log.warning("BigCommerce: set image failed for sku=%s | url=%s", sku, canonical_url[:60])
-        elif canonical_url:
-            log.debug("BigCommerce: skip image (invalid URL) | sku=%s | url=%s", sku, canonical_url[:60])
+        if canonical_url and canonical_url not in all_image_urls:
+            all_image_urls = [canonical_url] + all_image_urls
+        any_image_set = False
+        for img_idx, img_url in enumerate(all_image_urls[:5]):
+            img_url = (img_url or "").strip()
+            if not img_url:
+                continue
+            if not _is_valid_image_url(img_url):
+                log.debug("BigCommerce: skip image (invalid URL) | sku=%s | url=%s", sku, img_url[:60])
+                continue
+            is_thumb = (img_idx == 0)
+            url = f"{cfg.base}/v3/catalog/products/{product_id}/images"
+            payload = {"image_url": img_url, "is_thumbnail": is_thumb, "sort_order": img_idx}
+            try:
+                log.info("BigCommerce: adding image %s/%s | thumbnail=%s | sku=%s | url=%s",
+                         img_idx + 1, len(all_image_urls[:5]), is_thumb, sku, img_url[:120])
+                resp = requests.post(url, headers=_headers(cfg), data=json.dumps(payload), timeout=20)
+                if resp.status_code in (200, 201):
+                    if is_thumb:
+                        image_set += 1
+                    any_image_set = True
+                else:
+                    log.warning("BigCommerce: add image failed | sku=%s | img=%s | status=%s | body=%s",
+                                sku, img_idx + 1, resp.status_code, resp.text[:200])
+            except Exception as e:
+                log.warning("BigCommerce: add image error | sku=%s | img=%s | %s", sku, img_idx + 1, e)
+        if not any_image_set and all_image_urls:
+            log.warning("BigCommerce: no images uploaded for sku=%s", sku)
 
     summary = {
         "total_products": total,

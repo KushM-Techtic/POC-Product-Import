@@ -53,12 +53,14 @@ def _source_domain(url: str) -> str:
 
 
 def _filter_images_same_domain(image_urls: list[str], source_url: str) -> list[str]:
-    """Keep only image URLs that belong to the same domain as source_url. Ensures no mismatch with source website."""
+    """Keep only image URLs that belong to the same site as source_url. Allows same domain, subdomains, and same-brand CDNs (e.g. media-amazon.com for amazon.com)."""
     if not source_url or not image_urls:
         return list(image_urls)
     base_domain = _source_domain(source_url)
     if not base_domain:
         return list(image_urls)
+    # Allow same domain, subdomains (e.g. cdn.trucksrus.shop for trucksrus.shop), and same-brand CDN (e.g. m.media-amazon.com for www.amazon.com)
+    source_core = base_domain.split(".")[0] if base_domain else ""
     out = []
     for u in image_urls:
         if not u or not (u := u.strip()).startswith("http"):
@@ -66,7 +68,9 @@ def _filter_images_same_domain(image_urls: list[str], source_url: str) -> list[s
         d = _source_domain(u)
         if d == base_domain or d.endswith("." + base_domain):
             out.append(u)
-    # Return only same-domain images; if none, return [] so we never use an image from another site
+        elif source_core and len(source_core) > 2 and source_core in d:
+            # Same brand/site CDN (e.g. amazon.com -> m.media-amazon.com, fls-na.amazon.com)
+            out.append(u)
     return out
 
 
@@ -133,37 +137,152 @@ def _normalize_image_list(images: Any) -> list[str]:
     return out
 
 
-def _fetch_image_urls_from_page(page_url: str, timeout: int = 12) -> list[str]:
-    """Fetch product page HTML and extract image URLs from img src/data-src. Fallback when Tavily returns no images."""
+def _resolve_url(u: str, base_full: str, base: str) -> str:
+    """Resolve relative or protocol-relative URL to absolute."""
+    if not u:
+        return ""
+    u = u.strip()
+    if u.startswith("//"):
+        return "https:" + u
+    if u.startswith("/"):
+        return urljoin(base_full, u)
+    if not u.startswith("http"):
+        return urljoin(base, u)
+    return u
+
+
+def _is_skip_image(u: str) -> bool:
+    """True if URL is a logo, icon, tracking pixel, placeholder, or captcha to skip."""
+    if not u:
+        return True
+    ul = u.lower()
+    skip_kw = ("logo", "favicon", "icon", "placeholder", "captcha", "recaptcha",
+               "tracking", "pixel", "blank", "spacer", "banner", "flag.png",
+               "shipping.png", "warning.png", "sprite", "badge", "star", "rating",
+               "arrow", "button", "loader", "spinner", "{{")
+    return any(k in ul for k in skip_kw) or "data:" in ul
+
+
+def _fetch_page_html(page_url: str, timeout: int = 12) -> str:
+    """Fetch page HTML with a browser-like User-Agent."""
     if not page_url or not page_url.startswith("http"):
-        return []
+        return ""
     try:
-        req = Request(page_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"})
+        req = Request(page_url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+        })
         with urlopen(req, timeout=timeout) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+            return resp.read().decode("utf-8", errors="replace")
     except Exception as e:
-        log.warning("Fetch page for images failed | url=%s | %s", page_url[:50], e)
-        return []
-    base = page_url.rsplit("/", 1)[0] + "/"
+        log.warning("Fetch page HTML failed | url=%s | %s", page_url[:60], e)
+        return ""
+
+
+def _extract_product_image_from_html(
+    html: str,
+    page_url: str,
+    sku: str = "",
+    mpn: str = "",
+) -> str:
+    """
+    Extract the main product image from page HTML using priority layers:
+    1. og:image meta tag (explicitly declares the page's main image)
+    2. JSON-LD structured data Product.image
+    3. <img> or link[rel=image_src] whose URL contains the SKU or MPN
+    Returns the best image URL found, or "" if nothing found.
+    """
+    if not html:
+        return ""
     base_scheme = urlparse(page_url)
     base_full = f"{base_scheme.scheme}://{base_scheme.netloc}"
-    urls = []
-    for attr in ("data-src", "data-lazy-src", "src"):
-        pat = re.compile(rf'<img[^>]+{re.escape(attr)}=["\']([^"\']+)["\']', re.IGNORECASE)
-        for m in pat.finditer(html):
-            u = m.group(1).strip()
-            if not u or "data:" in u or "placeholder" in u.lower() or "logo" in u.lower() or "favicon" in u.lower():
-                continue
-            if u.startswith("//"):
-                u = "https:" + u
-            elif u.startswith("/"):
-                u = urljoin(base_full, u)
-            elif not u.startswith("http"):
-                u = urljoin(base, u)
-            if u.startswith("http") and u not in urls:
+    base = page_url.rsplit("/", 1)[0] + "/"
+
+    def resolve(u: str) -> str:
+        return _resolve_url(u, base_full, base)
+
+    # --- Layer 1: og:image / twitter:image meta tags ---
+    for pattern in (
+        r'<meta\s+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta\s+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']',
+        r'<meta\s+(?:property|name)=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta\s+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']twitter:image["\']',
+    ):
+        m = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+        if m:
+            u = resolve(m.group(1).strip())
+            if u and not _is_skip_image(u):
+                log.info("Image layer 1 (og:image): %s", u[:80])
+                return u
+
+    # --- Layer 2: JSON-LD structured data Product.image ---
+    for script in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.IGNORECASE | re.DOTALL):
+        try:
+            data = json.loads(script.strip())
+            # Handle @graph arrays
+            if isinstance(data, dict) and data.get("@graph"):
+                data = data["@graph"]
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                t = str(item.get("@type", "")).lower()
+                if "product" not in t and "offer" not in t:
+                    continue
+                img = item.get("image")
+                if isinstance(img, list):
+                    img = img[0] if img else ""
+                if isinstance(img, dict):
+                    img = img.get("url") or img.get("contentUrl") or ""
+                if img and isinstance(img, str):
+                    u = resolve(img.strip())
+                    if u and not _is_skip_image(u):
+                        log.info("Image layer 2 (JSON-LD): %s", u[:80])
+                        return u
+        except Exception:
+            continue
+
+    # --- Layer 3: <img> whose src URL contains the SKU or MPN ---
+    if sku or mpn:
+        sku_clean = re.sub(r"[\-_\s]", "", (sku or "").lower())
+        mpn_clean = re.sub(r"[\-_\s]", "", (mpn or "").lower())
+        for attr in ("data-src", "data-lazy-src", "data-zoom-image", "src"):
+            for m in re.finditer(rf'<img[^>]+{re.escape(attr)}=["\']([^"\']+)["\']', html, re.IGNORECASE):
+                u = resolve(m.group(1).strip())
+                if not u or _is_skip_image(u):
+                    continue
+                u_lower = re.sub(r"[\-_\s]", "", u.lower())
+                if (sku_clean and sku_clean in u_lower) or (mpn_clean and mpn_clean in u_lower):
+                    log.info("Image layer 3 (SKU in URL): %s", u[:80])
+                    return u
+
+    return ""
+
+
+def _fetch_image_urls_from_page(page_url: str, timeout: int = 12) -> list[str]:
+    """Fetch product page HTML and return sorted product image candidates (fallback when layers 1–3 fail)."""
+    html = _fetch_page_html(page_url, timeout=timeout)
+    if not html:
+        return []
+    base_scheme = urlparse(page_url)
+    base_full = f"{base_scheme.scheme}://{base_scheme.netloc}"
+    base = page_url.rsplit("/", 1)[0] + "/"
+
+    def resolve(u: str) -> str:
+        return _resolve_url(u, base_full, base)
+
+    seen: set[str] = set()
+    urls: list[str] = []
+    for attr in ("data-zoom-image", "data-src", "data-lazy-src", "src"):
+        for m in re.finditer(rf'<img[^>]+{re.escape(attr)}=["\']([^"\']+)["\']', html, re.IGNORECASE):
+            u = resolve(m.group(1).strip())
+            if u and u not in seen and not _is_skip_image(u) and u.startswith("http"):
+                seen.add(u)
                 urls.append(u)
+
     if not urls:
         urls = _extract_image_urls_from_text(html, max_urls=15, base_url=base_full)
+
     log.info("Fetched %s image URLs from page HTML first=%s", len(urls), (urls[0][:80] if urls else "none"))
     for i, u in enumerate(urls[:5]):
         log.info("  fetch image[%s]=%s", i, u[:90])
@@ -237,31 +356,65 @@ def _crawl_page_content(url: str, query: str, include_images: bool = True) -> tu
         return "", []
 
 
-def _search_web(query: str, max_results: int = 8) -> list[dict[str, Any]]:
-    """Run Tavily search; return list of {title, url, content}."""
+def _search_web(query: str, max_results: int = 8) -> tuple[list[dict[str, Any]], list[str]]:
+    """Run Tavily search with images; return (results, image_urls).
+    Each result has {title, url, content, images}. Top-level images are also returned."""
     api_key = (os.environ.get("TAVILY_API_KEY") or "").strip()
     if not api_key:
         log.warning("TAVILY_API_KEY not set; skipping web search")
-        return []
+        return [], []
     try:
         from tavily import TavilyClient
         client = TavilyClient(api_key=api_key)
-        response = client.search(query, max_results=max_results, search_depth="advanced")
-        # Response has .get("results", []) with title, url, content
-        results = response.get("results") if isinstance(response, dict) else getattr(response, "results", [])
-        log.info("Tavily search response: %s results", len(results) if results else 0)
+        response = client.search(
+            query,
+            max_results=max_results,
+            search_depth="advanced",
+            include_images=True,
+            include_image_descriptions=True,
+        )
+        raw = response if isinstance(response, dict) else {}
+        results = raw.get("results") or []
+        # Top-level images list from search response
+        top_images: list[str] = []
+        raw_imgs = raw.get("images") or []
+        for img in raw_imgs:
+            if isinstance(img, str) and img.startswith("http"):
+                top_images.append(img)
+            elif isinstance(img, dict):
+                u = (img.get("url") or "").strip()
+                if u and u.startswith("http"):
+                    top_images.append(u)
+
+        log.info("Tavily search response: %s results, %s top-level images", len(results), len(top_images))
         for i, r in enumerate((results or [])[:5]):
             if isinstance(r, dict):
                 log.info("Tavily search [%s] title=%s url=%s", i, (r.get("title") or "")[:60], (r.get("url") or "")[:70])
+        if top_images:
+            log.info("Tavily search images (%s total):", len(top_images))
+            for i, u in enumerate(top_images):
+                log.info("  [IMG%s] %s", i + 1, u)
         if not results:
-            return []
-        return [
-            {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")}
-            for r in (results if isinstance(results, list) else [])
-        ]
+            return [], top_images
+        out = []
+        for r in (results if isinstance(results, list) else []):
+            entry = {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")}
+            # Some Tavily plans return per-result images too
+            r_imgs = r.get("images") or []
+            per_imgs = []
+            for img in r_imgs:
+                if isinstance(img, str) and img.startswith("http"):
+                    per_imgs.append(img)
+                elif isinstance(img, dict):
+                    u = (img.get("url") or "").strip()
+                    if u and u.startswith("http"):
+                        per_imgs.append(u)
+            entry["images"] = per_imgs
+            out.append(entry)
+        return out, top_images
     except Exception as e:
         log.warning("Tavily search failed | %s", e)
-        return []
+        return [], []
 
 
 def _build_search_query(product: dict[str, Any]) -> str:
@@ -279,10 +432,12 @@ def _build_search_query(product: dict[str, Any]) -> str:
 def _call_llm_for_product(
     product: dict[str, Any],
     search_results: list[dict[str, Any]],
+    search_images: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """
-    Send product + search results to OpenAI. Strict instructions: match the CORRECT product
-    (same SKU/model), pick ONE best source, return JSON with name, description, price, image_url, source_website.
+    Send product + search results (including images from Tavily) to OpenAI.
+    LLM returns JSON with name, description, price, image_url, source_website in one step.
+    image_url is picked directly from the search images — same flow as text details.
     """
     api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
     if not api_key:
@@ -302,11 +457,14 @@ def _call_llm_for_product(
     search_blob = ""
     if search_results:
         for i, r in enumerate(search_results[:10], 1):
-            search_blob += f"\n[{i}] Title: {r.get('title', '')}\nURL: {r.get('url', '')}\nContent: {r.get('content', '')[:500]}\n"
+            imgs = r.get("images") or []
+            img_note = f"\n   Images on this page: {', '.join(imgs[:3])}" if imgs else ""
+            search_blob += f"\n[{i}] Title: {r.get('title', '')}\nURL: {r.get('url', '')}\nContent: {r.get('content', '')[:400]}{img_note}\n"
     else:
         search_blob = "\n(No web search results available; use product name/brand and return best-effort JSON.)"
 
-    prompt = f"""You are a product data expert. We have a product from our Excel sheet. Your task is to find the CORRECT matching product on the web (same product/SKU/model, not a different variant).
+    prompt = f"""You are a product data expert. We have a product from our Excel sheet.
+Your task: find the CORRECT matching product on the web and return its data.
 
 Product from our sheet:
 - Brand: {brand}
@@ -316,32 +474,34 @@ Product from our sheet:
 Web search results:
 {search_blob}
 
-Instructions (mandatory):
-1. Match the EXACT product or the same model/SKU. Do not pick a different product or variant.
-2. Pick ONE best source (e.g. Amazon, Flipkart, official brand site) where this product is listed.
-3. Extract from that source: product name, price (number or string), and the source page URL. Description and image_url will be filled later from the page; you may leave them empty or put a short snippet.
-4. Return valid JSON only, no markdown, with these exact keys: name, description, price, image_url, source_website.
-   - source_website must be the full URL of the page you picked (e.g. https://www.amazon.com/...). This is required so we can fetch the full page content.
-   - If you cannot find the correct product, return JSON with empty strings for missing fields but still set source_website to the best URL you found, or "" if none.
+Instructions:
+1. Match the EXACT product (same SKU/model). Do NOT pick a different variant.
+2. PRIORITY for source_website:
+   a. Official brand/manufacturer website (e.g. tuffyproducts.com for Tuffy Security) — FIRST choice.
+   b. Dedicated retailer product page (e.g. trucksrus.shop, truckworksunlimited.com) — second choice.
+   c. Amazon, eBay, Walmart — LAST RESORT only, avoid if any other option exists.
+3. Return valid JSON only, no markdown, with these exact keys:
+   name, description, price, image_url, source_website
+   - image_url: leave as "" (image is handled separately)
 
-Example output: {{"name": "Product Name", "description": "", "price": "29.99", "image_url": "", "source_website": "https://..."}}
+Example: {{"name": "Product Name", "description": "Short description if available", "price": "29.99", "image_url": "", "source_website": "https://..."}}
 """
 
     try:
         r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=800,
+            max_tokens=900,
+            response_format={"type": "json_object"},
         )
         text = (r.choices[0].message.content or "").strip()
-        log.info("Tavily LLM (pick source) response length=%s preview=%s", len(text), text[:400] if text else "empty")
-        if text.startswith("```"):
-            text = re.sub(r"^```\w*\n?", "", text).strip()
-            text = re.sub(r"\n?```\s*$", "", text).strip()
+        log.info("Tavily LLM (pick source+image) response length=%s preview=%s", len(text), text[:400] if text else "empty")
         data = json.loads(text)
         if isinstance(data, dict):
             out = {k: (data.get(k) or "") for k in RESULT_KEYS}
-            log.info("Tavily LLM parsed result: name=%s source_website=%s image_url=%s", (out.get("name") or "")[:50], (out.get("source_website") or "")[:60], (out.get("image_url") or "")[:80])
+            log.info("LLM result: name=%s", (out.get("name") or "")[:60])
+            log.info("LLM result: source_website=%s", out.get("source_website") or "")
+            log.info("LLM result: image_url=%s", out.get("image_url") or "")
             return out
     except Exception as e:
         log.warning("OpenAI product finder failed | %s", e)
@@ -541,57 +701,69 @@ def find_product_with_ai(product: dict[str, Any], search_method: str = SEARCH_ME
     log.info("AI product finder | method=tavily")
     query = _build_search_query(product)
     log.info("AI product finder | query=%s", query[:80])
-    search_results = _search_web(query)
-    log.info("Web search returned %s results", len(search_results))
-    result = _call_llm_for_product(product, search_results)
-    # When OpenAI fails (e.g. 429 quota), use first search result URL so we still get images via extract/crawl
+    search_results, search_images = _search_web(query)
+    log.info("Web search returned %s results, %s images", len(search_results), len(search_images))
+
+    # LLM picks: source_website AND image_url together from search results + images in ONE call
+    result = _call_llm_for_product(product, search_results, search_images)
+
+    # Fallback: if LLM failed (e.g. quota), use first non-blocked search result
+    _BLOCKED_DOMAINS = ("amazon.com", "ebay.com", "walmart.com", "facebook.com")
+
+    def _is_blocked(url: str) -> bool:
+        return any(b in _source_domain(url) for b in _BLOCKED_DOMAINS)
+
     if not result and search_results:
-        first_url = (search_results[0].get("url") or "").strip()
-        if first_url and first_url.startswith("http"):
-            log.info("Tavily: LLM failed; using first search result URL as source for extract/crawl | url=%s", first_url[:60])
-            result = {
-                "name": (product.get("name") or product.get("sku") or "").strip(),
-                "description": "",
-                "price": "",
-                "image_url": "",
-                "source_website": first_url,
-            }
+        fallback_url = next(
+            (r.get("url", "") for r in search_results if not _is_blocked(r.get("url", ""))),
+            (search_results[0].get("url", "") if search_results else ""),
+        )
+        if fallback_url and fallback_url.startswith("http"):
+            log.info("LLM failed; using fallback source | url=%s", fallback_url[:60])
+            result = {k: "" for k in RESULT_KEYS}
+            result["name"] = (product.get("name") or product.get("sku") or "").strip()
+            result["source_website"] = fallback_url
+
     if not result:
         return {k: "" for k in RESULT_KEYS}
+
     source_url = (result.get("source_website") or "").strip()
-    log.info("AI product finder | source_website=%s", source_url[:60] if source_url else "(none)")
+    sku = (product.get("sku") or product.get("sku_raw") or "").strip()
+
+    log.info("LLM chose source_website=%s", source_url if source_url else "(none)")
+
+    # === Images: keep all valid Tavily search images (up to 5); first one is the main/thumbnail ===
+    valid_search_images = [u for u in search_images if not _is_bad_image_url(u)]
+    main_image = valid_search_images[0] if valid_search_images else ""
+    if valid_search_images:
+        log.info("Images from Tavily search (%s valid):", len(valid_search_images))
+        for i, u in enumerate(valid_search_images):
+            log.info("  [IMG%s] %s", i + 1, u)
+    else:
+        log.warning("No valid images in Tavily search results")
+
+    # === Get full description via Tavily extract ===
     if source_url and source_url.startswith("http"):
-        log.info("Extracting full page content and images from source URL (extract + crawl)")
-        page_content, image_urls = _extract_page_content(source_url, query)
-        crawl_content, crawl_images = _crawl_page_content(source_url, query)
-        if crawl_content or crawl_images:
-            log.info("Crawl got content len=%s, images=%s", len(crawl_content), len(crawl_images))
-            page_content = (page_content + "\n\n" + crawl_content).strip() if page_content else crawl_content
-            image_urls = list(dict.fromkeys(image_urls + crawl_images))
-        if not image_urls and page_content:
-            image_urls = _extract_image_urls_from_text(page_content, base_url=source_url)
-            log.info("Extracted %s image URLs from page text", len(image_urls))
-        # Keep only images from the source website so content and image never mismatch
-        image_urls = _filter_images_same_domain(image_urls, source_url)
-        # If we still have no same-domain images, try direct page fetch (same URL = same domain)
-        if not image_urls:
-            image_urls = _fetch_image_urls_from_page(source_url)
-            log.info("Tavily: no same-domain images yet; direct page fetch | count=%s", len(image_urls))
-        # Drop placeholder/captcha URLs so we never use them as main image
-        image_urls = [u for u in image_urls if not _is_bad_image_url(u)]
-        log.info("Tavily: using same-domain images only | count=%s", len(image_urls))
-        log.info("Combined content len=%s, images=%s first_image=%s", len(page_content), len(image_urls), (image_urls[0][:80] if image_urls else "none"))
-        if page_content or image_urls:
-            full_desc, main_image = _extract_full_description_and_image(
-                product, page_content, image_urls, source_url
+        page_content, _ = _extract_page_content(source_url, query)
+        if not page_content:
+            crawl_content, _ = _crawl_page_content(source_url, query)
+            page_content = crawl_content
+        if page_content:
+            full_desc, _ = _extract_full_description_and_image(
+                product, page_content, ([main_image] if main_image else []), source_url
             )
             if full_desc:
                 result["description"] = full_desc
-                log.info("Using full description | len=%s", len(full_desc))
-            if main_image and not _is_bad_image_url(main_image):
-                result["image_url"] = main_image
-                # Return full candidate list (main first) so BC can try next if first fails
-                rest = [u for u in image_urls if u != main_image and not _is_bad_image_url(u)]
-                result["_image_urls"] = [main_image] + rest
-                log.info("Using main product image | %s (total candidates=%s)", main_image[:60], len(result["_image_urls"]))
+                log.info("Description extracted | len=%s", len(full_desc))
+
+    if main_image and not _is_bad_image_url(main_image):
+        result["image_url"] = main_image
+        result["_image_urls"] = valid_search_images  # all 5 kept for Excel + BC
+        log.info("Final product image (main) | %s", main_image)
+        log.info("All product images (%s) | %s", len(valid_search_images), valid_search_images)
+    else:
+        result["image_url"] = ""
+        result["_image_urls"] = []
+        log.warning("No product image found | source=%s", source_url[:60] if source_url else "(none)")
+
     return result

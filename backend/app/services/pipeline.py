@@ -5,7 +5,7 @@ from typing import Any
 
 from app.logger import get_logger
 from app.services.ai_column_mapper import map_columns_with_ai
-from app.services.ai_product_finder import find_product_with_ai, _filter_images_same_domain
+from app.services.ai_product_finder import find_product_with_ai
 from app.services.export import build_bc_dataframe
 from app.services.input_parser import load_excel, parse_excel_with_mapping
 
@@ -61,12 +61,11 @@ def run_pipeline(
             prod["price"] = result["price"]
         source_website = (result.get("source_website") or "").strip()
         prod["source_website"] = source_website
-        raw_image_urls = result.get("_image_urls") or ([result["image_url"]] if result.get("image_url") else [])
-        # Only use images from the chosen source website so Excel and BC show the same image A from that page
-        same_domain_urls = _filter_images_same_domain(raw_image_urls, source_website)
-        prod["_image_urls"] = same_domain_urls
-        # Canonical image = first from source website; use this single URL in both Excel and BC
-        prod["image_url"] = (same_domain_urls[0] if same_domain_urls else "").strip()
+        # image_url = first/main image; _image_urls = all valid Tavily images (up to 5)
+        canonical_image = (result.get("image_url") or "").strip()
+        all_images = result.get("_image_urls") or ([canonical_image] if canonical_image else [])
+        prod["image_url"] = canonical_image
+        prod["_image_urls"] = all_images
 
     log.info("Phase 4 completed | enriched %s products with AI", limit)
     log.info("========== Pipeline finished ==========")

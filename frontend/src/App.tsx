@@ -48,7 +48,8 @@ function App() {
   const [isExporting, setIsExporting] = useState(false)
   const [editIndex, setEditIndex] = useState<number | null>(null)
   const [editForm, setEditForm] = useState<Product | null>(null)
-  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
+  const [galleryImages, setGalleryImages] = useState<string[]>([])
+  const [galleryIndex, setGalleryIndex] = useState(0)
 
   const uploadProps: UploadProps = {
     accept: '.xlsx,.xls',
@@ -151,6 +152,14 @@ function App() {
 
   const updateEditForm = (field: keyof Product, value: string | number | boolean | string[] | undefined) => {
     setEditForm((prev) => (prev ? { ...prev, [field]: value } : null))
+  }
+
+  const openGallery = (product: Product) => {
+    const imgs = (product._image_urls ?? []).filter((u) => u && u.startsWith('http'))
+    if (imgs.length === 0 && product.image_url?.startsWith('http')) imgs.push(product.image_url)
+    if (imgs.length === 0) return
+    setGalleryImages(imgs)
+    setGalleryIndex(0)
   }
 
   const approveAll = () => {
@@ -296,23 +305,26 @@ function App() {
     },
     {
       title: 'Image',
-      dataIndex: 'image_url',
       key: 'image_url',
-      width: 80,
-      render: (v: string) =>
-        v && v.startsWith('http') ? (
+      width: 90,
+      render: (_: unknown, r: Product) => {
+        const v = r.image_url
+        const count = (r._image_urls ?? []).filter((u) => u && u.startsWith('http')).length
+        return v && v.startsWith('http') ? (
           <span
             role="button"
             tabIndex={0}
             className="table-product-img-wrap"
-            onClick={() => setImagePreviewUrl(v)}
-            onKeyDown={(e) => e.key === 'Enter' && setImagePreviewUrl(v)}
+            onClick={() => openGallery(r)}
+            onKeyDown={(e) => e.key === 'Enter' && openGallery(r)}
           >
             <img src={v} alt="" className="table-product-img" referrerPolicy="no-referrer" />
+            {count > 1 && <span className="img-count-badge">+{count - 1}</span>}
           </span>
         ) : (
           <span className="table-no-img">—</span>
-        ),
+        )
+      },
     },
     {
       title: 'Source',
@@ -468,7 +480,7 @@ function App() {
                   rows={4}
                 />
               </Form.Item>
-              <Form.Item label="Image URL">
+              <Form.Item label="Image URL (main)">
                 <Input
                   value={String(editForm.image_url ?? '')}
                   onChange={(e) => updateEditForm('image_url', e.target.value)}
@@ -479,6 +491,30 @@ function App() {
                   </div>
                 )}
               </Form.Item>
+              {(() => {
+                const imgs = (editForm._image_urls ?? []).filter((u) => u && u.startsWith('http'))
+                if (imgs.length <= 1) return null
+                return (
+                  <Form.Item label={`All images (${imgs.length}) — click to set as main`}>
+                    <div className="edit-all-images">
+                      {imgs.map((url, i) => (
+                        <div
+                          key={i}
+                          className={`edit-img-thumb${editForm.image_url === url ? ' selected' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          title={`Image ${i + 1}`}
+                          onClick={() => updateEditForm('image_url', url)}
+                          onKeyDown={(e) => e.key === 'Enter' && updateEditForm('image_url', url)}
+                        >
+                          <img src={url} alt={`Image ${i + 1}`} referrerPolicy="no-referrer" />
+                          {editForm.image_url === url && <span className="edit-img-main-badge">Main</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </Form.Item>
+                )
+              })()}
               <Form.Item label="Source website">
                 <Input
                   value={String(editForm.source_website ?? '')}
@@ -499,15 +535,42 @@ function App() {
       </Modal>
 
       <Modal
-        title="Image preview"
-        open={!!imagePreviewUrl}
-        onCancel={() => setImagePreviewUrl(null)}
+        title={galleryImages.length > 0 ? `Image ${galleryIndex + 1} of ${galleryImages.length}` : 'Image preview'}
+        open={galleryImages.length > 0}
+        onCancel={() => setGalleryImages([])}
         footer={null}
-        width={480}
-        styles={{ body: { padding: 16, textAlign: 'center' } }}
+        width={600}
+        styles={{ body: { padding: '16px' } }}
       >
-        {imagePreviewUrl && (
-          <img src={imagePreviewUrl} alt="Preview" className="image-preview-large" referrerPolicy="no-referrer" />
+        {galleryImages.length > 0 && (
+          <div className="gallery-modal">
+            <div className="gallery-main-wrap">
+              <img
+                src={galleryImages[galleryIndex]}
+                alt={`Image ${galleryIndex + 1}`}
+                className="image-preview-large"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+            {galleryImages.length > 1 && (
+              <div className="gallery-thumbs-row">
+                {galleryImages.map((url, i) => (
+                  <div
+                    key={i}
+                    className={`edit-img-thumb${i === galleryIndex ? ' selected' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    title={`Image ${i + 1}`}
+                    onClick={() => setGalleryIndex(i)}
+                    onKeyDown={(e) => e.key === 'Enter' && setGalleryIndex(i)}
+                  >
+                    <img src={url} alt={`Image ${i + 1}`} referrerPolicy="no-referrer" />
+                    {i === galleryIndex && <span className="edit-img-main-badge">Viewing</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </Modal>
     </div>

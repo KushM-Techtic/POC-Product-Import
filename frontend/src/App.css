@@ -53,9 +53,109 @@
 }
 
 .image-preview-large {
-  max-width: 400px;
-  max-height: 400px;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
   display: block;
   margin: 0 auto;
+  border-radius: 6px;
+}
+
+/* Image count badge on thumbnail */
+.table-product-img-wrap {
+  position: relative;
+}
+.img-count-badge {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* All images grid in edit modal */
+.edit-all-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.edit-img-thumb {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 6px;
+  border: 2px solid #eee;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.edit-img-thumb:hover {
+  border-color: #1677ff;
+}
+.edit-img-thumb.selected {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.2);
+}
+.edit-img-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.edit-img-main-badge {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  right: 2px;
+  background: rgba(22, 119, 255, 0.85);
+  color: #fff;
+  font-size: 10px;
+  text-align: center;
+  padding: 2px 0;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+/* Gallery modal */
+.gallery-modal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Fixed-size container so switching images never resizes the modal */
+.gallery-main-wrap {
+  width: 100%;
+  height: 340px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #eee;
+  overflow: hidden;
+}
+
+/* Thumbnail row: 5 equal-width thumbs in one row */
+.gallery-thumbs-row {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  width: 100%;
+  justify-content: center;
+}
+.gallery-thumbs-row .edit-img-thumb {
+  flex: 1;
+  height: 80px;
+  width: 0; /* flex will size it */
+  min-width: 0;
 }

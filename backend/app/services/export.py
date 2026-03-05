@@ -8,8 +8,10 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
-# POC: fixed columns; Image = image URL; Data Source = Tavily or OpenAI; Source Website = page URL.
-BC_COLUMNS = ["Brand Name", "SKU", "Name", "Price", "Description", "Image", "Data Source", "Source Website"]
+# POC: fixed columns; Image 1-5 = up to 5 product image URLs from Tavily search.
+BC_COLUMNS = ["Brand Name", "SKU", "Name", "Price", "Description",
+              "Image 1", "Image 2", "Image 3", "Image 4", "Image 5",
+              "Data Source", "Source Website"]
 PLACEHOLDER_IMAGE_URL = "https://via.placeholder.com/300x300?text=No+Image"
 PLACEHOLDER_DESCRIPTION = "No description"
 PLACEHOLDER_NAME = "Product"
@@ -32,12 +34,18 @@ def _row_to_bc(prod: dict[str, Any], _images_base_path: Path | None) -> dict[str
     row["Name"] = str((prod.get("name") or "").strip() or (row["SKU"] if row["SKU"] != "—" else PLACEHOLDER_NAME))
     row["Price"] = str(prod.get("price") or _safe_get(raw, "Retail Price") or _safe_get(raw, "List Price") or "0")
     row["Description"] = str((prod.get("description") or "").strip() or PLACEHOLDER_DESCRIPTION)
-    # Use same canonical image URL as BC (from chosen source website only)
+    # All image URLs (up to 5 from Tavily search)
+    image_urls = prod.get("_image_urls") or []
     canonical_image = (prod.get("image_url") or "").strip()
-    if not canonical_image:
-        image_urls = prod.get("_image_urls") or []
-        canonical_image = (image_urls[0] if image_urls else "").strip()
-    row["Image"] = str(canonical_image or PLACEHOLDER_IMAGE_URL)
+    if canonical_image and canonical_image not in image_urls:
+        image_urls = [canonical_image] + image_urls
+    for i in range(1, 6):
+        key = f"Image {i}"
+        idx = i - 1
+        if idx < len(image_urls) and image_urls[idx]:
+            row[key] = str(image_urls[idx])
+        else:
+            row[key] = str(PLACEHOLDER_IMAGE_URL) if i == 1 else ""
     method = (prod.get("_search_method") or "").strip().lower()
     row["Data Source"] = "OpenAI" if method == "openai" else ("Tavily" if method == "tavily" else "—")
     row["Source Website"] = str((prod.get("source_website") or "").strip() or "—")
