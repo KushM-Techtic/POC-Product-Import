@@ -1,0 +1,17 @@
+{
+  "apps": [
+    {
+      "name": "bigcommerce-automation-poc-backend-8000",
+      "cwd": "./backend",
+      "script": "run_production.py",
+      "interpreter": "python3"
+    },
+    {
+      "name": "bigcommerce-automation-poc-frontend-3000",
+      "cwd": "./frontend",
+      "script": "npx",
+      "args": ["serve", "-s", "dist", "-l", "3000"],
+      "interpreter": "none"
+    }
+  ]
+}
