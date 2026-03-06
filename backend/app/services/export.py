@@ -11,7 +11,7 @@ from openpyxl.utils import get_column_letter
 # POC: fixed columns; Image 1-5 = up to 5 product image URLs from Tavily search.
 BC_COLUMNS = ["Brand Name", "SKU", "Name", "Price", "Description",
               "Image 1", "Image 2", "Image 3", "Image 4", "Image 5",
-              "Data Source", "Source Website"]
+              "Source Website"]
 PLACEHOLDER_IMAGE_URL = "https://via.placeholder.com/300x300?text=No+Image"
 PLACEHOLDER_DESCRIPTION = "No description"
 PLACEHOLDER_NAME = "Product"
@@ -46,8 +46,6 @@ def _row_to_bc(prod: dict[str, Any], _images_base_path: Path | None) -> dict[str
             row[key] = str(image_urls[idx])
         else:
             row[key] = str(PLACEHOLDER_IMAGE_URL) if i == 1 else ""
-    method = (prod.get("_search_method") or "").strip().lower()
-    row["Data Source"] = "OpenAI" if method == "openai" else ("Tavily" if method == "tavily" else "—")
     row["Source Website"] = str((prod.get("source_website") or "").strip() or "—")
     return row
 

@@ -34,6 +34,7 @@ type Product = {
   _search_method?: string
   raw_row?: Record<string, unknown>
   _approved?: boolean
+  _selected?: boolean
 }
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) || ''
@@ -84,28 +85,13 @@ function App() {
       if (!res.ok) throw new Error((await res.text()) || `Status ${res.status}`)
       const data = await res.json()
       const list: Product[] = Array.isArray(data.products) ? data.products : []
-      setProducts(list.map((p: Product) => ({ ...p, _approved: false })))
+      setProducts(list.map((p: Product) => ({ ...p, _approved: false, _selected: false })))
       setStatus(`${list.length} products loaded. Review and approve below.`)
       message.success(`${list.length} products loaded.`)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Something went wrong.'
       setError(msg); setStatus(null); message.error(msg)
     } finally { setIsUploading(false) }
-  }
-
-  const updateProduct = (index: number, field: keyof Product, value: string | number | boolean | string[] | undefined) => {
-    setProducts((prev) => {
-      const next = [...prev]
-      const p = { ...next[index], [field]: value }
-      if (field === 'image_url' && typeof value === 'string' && Array.isArray(p._image_urls)) {
-        const urls = p._image_urls.filter((u) => u !== value)
-        p._image_urls = [value, ...urls]
-      } else if (field === 'image_url' && typeof value === 'string') {
-        p._image_urls = [value]
-      }
-      next[index] = p
-      return next
-    })
   }
 
   const setMainImageFromGallery = (productIndex: number, newMainUrl: string, allUrls: string[]) => {
@@ -127,12 +113,17 @@ function App() {
     return { ok: missing.length === 0, missing }
   }
 
-  const setApproved = (index: number, approved: boolean) => {
-    if (approved) {
-      const v = validateForApproval(products[index] ?? {})
-      if (!v.ok) { message.warning(`Cannot approve — missing: ${v.missing.join(', ')}`); return }
-    }
-    updateProduct(index, '_approved', approved)
+  const toggleSelected = (index: number) => {
+    setProducts((prev) => {
+      const next = [...prev]
+      const p = next[index]
+      if (p) next[index] = { ...p, _selected: !p._selected }
+      return next
+    })
+  }
+
+  const toggleSelectAll = (checked: boolean) => {
+    setProducts((prev) => prev.map((p) => ({ ...p, _selected: checked })))
   }
 
   const openEditModal = (index: number) => {
@@ -171,26 +162,39 @@ function App() {
     setGalleryImages(imgs); setGalleryIndex(0); setGalleryProductIndex(index)
   }
 
-  const approveAll = () => {
+  const approveSelected = () => {
     let ok = 0, skip = 0
     setProducts((prev) => prev.map((p) => {
+      if (!p._selected) return { ...p }
       if (!validateForApproval(p).ok) { skip++; return { ...p, _approved: false } }
       ok++; return { ...p, _approved: true }
     }))
-    if (skip) message.warning(`Approved ${ok}, skipped ${skip} (missing data).`)
-    else message.success(`All ${ok} products approved.`)
+    if (ok + skip === 0) message.warning('Select products (check the boxes) then click Approve.')
+    else if (skip) message.warning(`Approved ${ok}, skipped ${skip} (missing data).`)
+    else message.success(`Approved ${ok} product(s).`)
   }
 
-  const unapproveAll = () => {
-    setProducts((prev) => prev.map((p) => ({ ...p, _approved: false })))
-    message.info('All products un-approved.')
+  const unapproveSelected = () => {
+    let count = 0
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (!p._selected) return { ...p }
+        if (p._approved) {
+          count++
+          return { ...p, _approved: false }
+        }
+        return { ...p }
+      }),
+    )
+    if (count) message.success(`Un-approved ${count} product(s).`)
+    else message.info('Select approved products (check the boxes) then click Un-approve.')
   }
 
   const approvedProducts = products.filter((p) => p._approved)
   const canExport = approvedProducts.length > 0
 
   const buildPayload = () => approvedProducts.map((p) => {
-    const { _approved, ...rest } = p
+    const { _approved, _selected, ...rest } = p
     const out = { ...rest }
     if (!out._image_urls && out.image_url) out._image_urls = [out.image_url]
     return out
@@ -245,13 +249,20 @@ function App() {
 
   const columns = [
     {
-      title: '',
+      title: (
+        <Checkbox
+          checked={products.length > 0 && products.every((p) => p._selected)}
+          indeterminate={products.some((p) => p._selected) && !products.every((p) => p._selected)}
+          onChange={(e) => toggleSelectAll(e.target.checked)}
+          className="approve-checkbox"
+        />
+      ),
       key: 'approve',
       width: 52,
       render: (_: unknown, __: Product, index: number) => (
         <Checkbox
-          checked={!!products[index]?._approved}
-          onChange={(e) => setApproved(index, e.target.checked)}
+          checked={!!products[index]?._selected}
+          onChange={() => toggleSelected(index)}
           className="approve-checkbox"
         />
       ),
@@ -363,10 +374,6 @@ function App() {
             <SafetyCertificateOutlined />
             <span>AI-powered enrichment</span>
           </div>
-          <div className="sidebar-help">
-            <GlobalOutlined />
-            <span>Tavily web search</span>
-          </div>
         </div>
       </aside>
 
@@ -476,11 +483,19 @@ function App() {
                 />
               </div>
               <div className="toolbar-btns">
-                <button className="toolbar-btn btn-outline" onClick={approveAll}>
-                  <CheckCircleOutlined /> Approve all
+                <button
+                  className="toolbar-btn btn-outline"
+                  onClick={approveSelected}
+                  disabled={!products.some((p) => p._selected)}
+                >
+                  <CheckCircleOutlined /> Approve
                 </button>
-                <button className="toolbar-btn btn-ghost" onClick={unapproveAll}>
-                  <CloseCircleOutlined /> Un-approve all
+                <button
+                  className="toolbar-btn btn-ghost"
+                  onClick={unapproveSelected}
+                  disabled={!products.some((p) => p._selected && p._approved)}
+                >
+                  <CloseCircleOutlined /> Un-approve
                 </button>
                 <button
                   className={`toolbar-btn btn-excel ${!canExport || isExporting ? 'btn-disabled' : ''}`}
